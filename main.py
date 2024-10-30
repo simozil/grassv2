@@ -6,12 +6,20 @@ import uuid
 import aiohttp
 from loguru import logger
 
-WSS_URI = "wss://proxy.wynd.network:4650/"
+# Daftar alternatif WSS URI
+WSS_URIS = [
+    "wss://proxy.wynd.network:4650/",
+    "wss://proxy.wynd.network/",
+    "wss://wss.wynd.network/",
+    "wss://node.wynd.network/"
+]
+
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
 
 class WebSocketClient:
     def __init__(self):
         self.users = []
+        self.current_uri_index = 0
 
     def clear_terminal(self):
         print("\033[H\033[J", end="")
@@ -24,6 +32,11 @@ class WebSocketClient:
         except FileNotFoundError:
             logger.error("users_proxies.json file not found!")
             return []
+
+    def get_next_uri(self):
+        uri = WSS_URIS[self.current_uri_index]
+        self.current_uri_index = (self.current_uri_index + 1) % len(WSS_URIS)
+        return uri
 
     async def heartbeat(self, websocket, user_id):
         while True:
@@ -47,6 +60,9 @@ class WebSocketClient:
 
         while True:
             try:
+                current_uri = self.get_next_uri()
+                logger.info(f"Trying to connect to {current_uri}")
+
                 await asyncio.sleep(random.uniform(0.1, 1.0))
                 
                 ssl_context = ssl.create_default_context()
@@ -59,13 +75,13 @@ class WebSocketClient:
                 
                 async with aiohttp.ClientSession(connector=connector) as session:
                     async with session.ws_connect(
-                        WSS_URI,
+                        current_uri,
                         headers={"User-Agent": USER_AGENT},
                         proxy=proxy,
                         ssl=False,
                         heartbeat=30  # Enable built-in heartbeat
                     ) as websocket:
-                        logger.info(f"🌐 [{user_id}] Connected to WebSocket")
+                        logger.info(f"🌐 [{user_id}] Connected to WebSocket at {current_uri}")
                         
                         # Start heartbeat task
                         heartbeat_task = asyncio.create_task(self.heartbeat(websocket, user_id))
