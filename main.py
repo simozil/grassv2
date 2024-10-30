@@ -1,95 +1,47 @@
 import asyncio
+import json
 import random
 import ssl
-import json
-import time
 import uuid
-import os
-from rich.console import Console
-from rich import print
-from loguru import logger
 import aiohttp
+from loguru import logger
 
-# Constants
-VERSION = "2.5.0"
 WSS_URI = "wss://proxy.wynd.network:4650/"
-SERVER_HOSTNAME = "proxy.wynd.network"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
 
-console = Console()
-
-class GrassBot:
+class WebSocketClient:
     def __init__(self):
-        self.console = Console()
+        self.users = []
 
     def clear_terminal(self):
-        os.system("cls" if os.name == "nt" else "clear")
-        self.console.print("[bold magenta]BACTIAR 291 - Script Started![/bold magenta]", justify="center")
-        self.console.print("[bold green]Welcome! Script will run shortly...[/bold green]\n", justify="center")
+        print("\033[H\033[J", end="")
 
-    @staticmethod
-    def load_proxy():
+    def load_users_and_proxies(self):
         try:
-            with open("proxy.json", "r") as file:
-                proxy_data = json.load(file)
-                return proxy_data.get("proxy_url")
+            with open("users_proxies.json", "r") as file:
+                data = json.load(file)
+                return data.get("users", [])
         except FileNotFoundError:
-            print("❌ [red]proxy.json file not found! Running without proxy.[/red]")
-            return None
+            logger.error("users_proxies.json file not found!")
+            return []
 
-    @staticmethod
-    def load_users():
-        with open("users.json", "r") as file:
-            users_data = json.load(file)
-            return [user["user_id"] for user in users_data["users"]]
-
-    async def send_ping(self, websocket, user_id):
+    async def heartbeat(self, websocket, user_id):
         while True:
             try:
-                ping_message = {
-                    "id": str(uuid.uuid4()),
-                    "version": "1.0.0",
+                await asyncio.sleep(20)  # Send heartbeat every 20 seconds
+                heartbeat_msg = {
                     "action": "PING",
-                    "data": {}
+                    "id": str(uuid.uuid4())
                 }
-                print(f"📡 [blue][{user_id}][/blue] Sending PING")
-                await websocket.send_str(json.dumps(ping_message))
-                await asyncio.sleep(20)
+                await websocket.send_json(heartbeat_msg)
+                logger.info(f"❤️ [{user_id}] Sent heartbeat")
             except Exception as e:
-                print(f"❌ [red][{user_id}] Ping error: {e}[/red]")
+                logger.error(f"❌ [{user_id}] Heartbeat error: {str(e)}")
                 break
 
-    async def handle_auth(self, websocket, message, device_id, user_id):
-        try:
-            auth_response = {
-                "id": message["id"],
-                "origin_action": "AUTH",
-                "result": {
-                    "browser_id": device_id,
-                    "user_id": user_id,
-                    "user_agent": USER_AGENT,
-                    "timestamp": int(time.time()),
-                    "device_type": "extension",
-                    "version": VERSION
-                }
-            }
-            print(f"🔐 [yellow][{user_id}] Sending AUTH response[/yellow]")
-            await websocket.send_str(json.dumps(auth_response))
-        except Exception as e:
-            print(f"❌ [red][{user_id}] Auth error: {e}[/red]")
-
-    async def handle_pong(self, websocket, message, user_id):
-        try:
-            pong_response = {
-                "id": message["id"],
-                "origin_action": "PONG"
-            }
-            print(f"🔄 [cyan][{user_id}] PONG received, responding...[/cyan]")
-            await websocket.send_str(json.dumps(pong_response))
-        except Exception as e:
-            print(f"❌ [red][{user_id}] Pong error: {e}[/red]")
-
-    async def connect_to_wss(self, user_id, proxy=None):
+    async def connect_to_wss(self, user_data):
+        user_id = user_data['user_id']
+        proxy = user_data['proxy']
         device_id = str(uuid.uuid4())
         logger.info(f"Device ID: {device_id} for User ID: {user_id}")
 
@@ -101,63 +53,87 @@ class GrassBot:
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
 
-                connector = aiohttp.TCPConnector(ssl=ssl_context)
+                connector = aiohttp.TCPConnector(ssl=ssl_context, force_close=True)
+                
+                logger.info(f"🌐 [{user_id}] Using proxy: {proxy}")
+                
                 async with aiohttp.ClientSession(connector=connector) as session:
                     async with session.ws_connect(
                         WSS_URI,
                         headers={"User-Agent": USER_AGENT},
                         proxy=proxy,
-                        ssl=False
+                        ssl=False,
+                        heartbeat=30  # Enable built-in heartbeat
                     ) as websocket:
-                        print(f"🌐 [green][{user_id}] Connected to WebSocket[/green]")
+                        logger.info(f"🌐 [{user_id}] Connected to WebSocket")
                         
-                        # Start ping task
-                        ping_task = asyncio.create_task(self.send_ping(websocket, user_id))
-
+                        # Start heartbeat task
+                        heartbeat_task = asyncio.create_task(self.heartbeat(websocket, user_id))
+                        
                         try:
-                            async for msg in websocket:
-                                if msg.type == aiohttp.WSMsgType.TEXT:
-                                    message = json.loads(msg.data)
-                                    logger.info(f"Message received for User ID {user_id}: {message}")
-
-                                    if "balance" in message.get("result", {}):
-                                        balance = message["result"]["balance"]
-                                        print(f"✅ [green][{user_id}] Balance updated: {balance}[/green]")
-
-                                    if message.get("action") == "AUTH":
-                                        await self.handle_auth(websocket, message, device_id, user_id)
-                                    elif message.get("action") == "PONG":
-                                        await self.handle_pong(websocket, message, user_id)
-                                elif msg.type == aiohttp.WSMsgType.CLOSED:
-                                    print(f"⚠️ [yellow][{user_id}] WebSocket connection closed[/yellow]")
+                            async for message in websocket:
+                                if message.type == aiohttp.WSMsgType.TEXT:
+                                    data = json.loads(message.data)
+                                    logger.info(f"Message received for User ID {user_id}: {data}")
+                                    
+                                    if data.get('action') == 'AUTH':
+                                        auth_response = {
+                                            "id": data['id'],
+                                            "origin_action": "AUTH",
+                                            "result": {
+                                                "browser_id": device_id,
+                                                "user_id": user_id,
+                                                "user_agent": USER_AGENT,
+                                                "timestamp": int(asyncio.get_event_loop().time()),
+                                                "device_type": "extension",
+                                                "version": "2.5.0"
+                                            }
+                                        }
+                                        await websocket.send_json(auth_response)
+                                        logger.info(f"🔐 [{user_id}] Sending AUTH response")
+                                    
+                                    elif data.get('action') == 'PING':
+                                        ping_response = {
+                                            "id": data['id'],
+                                            "origin_action": "PONG"
+                                        }
+                                        await websocket.send_json(ping_response)
+                                        logger.info(f"📡 [{user_id}] Sending PONG response")
+                                    
+                                elif message.type == aiohttp.WSMsgType.CLOSED:
+                                    logger.warning(f"WebSocket closed for User ID {user_id}")
                                     break
-                                elif msg.type == aiohttp.WSMsgType.ERROR:
-                                    print(f"❌ [red][{user_id}] WebSocket connection error[/red]")
+                                elif message.type == aiohttp.WSMsgType.ERROR:
+                                    logger.error(f"WebSocket error for User ID {user_id}")
                                     break
-
                         except Exception as e:
-                            print(f"⚠️ [yellow][{user_id}] Connection error: {e}[/yellow]")
+                            logger.error(f"Error in WebSocket loop for User ID {user_id}: {str(e)}")
                         finally:
-                            ping_task.cancel()
+                            heartbeat_task.cancel()
 
+            except aiohttp.ClientConnectorError as e:
+                logger.error(f"Connection error for User ID {user_id}: {str(e)}")
+            except aiohttp.ClientProxyConnectionError as e:
+                logger.error(f"Proxy connection error for User ID {user_id}: {str(e)}")
             except Exception as e:
-                print(f"❌ [red][{user_id}] Connection error: {e}[/red]")
-                await asyncio.sleep(5)
+                logger.error(f"Error for User ID {user_id}: {str(e)}")
+            
+            logger.info(f"Reconnecting for User ID {user_id} in 5 seconds...")
+            await asyncio.sleep(5)  # Wait before reconnecting
 
     async def run(self):
         self.clear_terminal()
-        user_ids = self.load_users()
-        proxy = self.load_proxy()
+        users_data = self.load_users_and_proxies()
         
-        if proxy:
-            print(f"🌍 [green]Using proxy: {proxy}[/green]")
-        
-        tasks = [self.connect_to_wss(user_id, proxy) for user_id in user_ids]
+        if users_data:
+            logger.info(f"🌍 Loaded {len(users_data)} user-proxy pairs")
+        else:
+            logger.warning("⚠️ No user-proxy pairs loaded. Exiting.")
+            return
+
+        tasks = [self.connect_to_wss(user_data) for user_data in users_data]
         await asyncio.gather(*tasks)
 
-def main():
-    bot = GrassBot()
-    asyncio.run(bot.run())
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    client = WebSocketClient()
+    asyncio.run(client.run())
