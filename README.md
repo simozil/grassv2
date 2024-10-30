@@ -24,19 +24,3 @@ lalu "inspeksi" dan salin perintah dibawah ini
 localStorage.getItem('userId')
 ```
 
-users.json
-```
-{
-    "users": [
-        {
-            "user_id": "user12345"
-        },
-        {
-            "user_id": "user67890"
-        },
-        {
-            "user_id": "user11223"
-        }
-    ]
-}
-```
