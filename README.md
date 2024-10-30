@@ -23,4 +23,4 @@ lalu "inspeksi" dan salin perintah dibawah ini
 ```
 localStorage.getItem('userId')
 ```
-
+# EDIT DIBAGIAN `users_proxies.json` untuk merubah USER_ID dan PROXY
