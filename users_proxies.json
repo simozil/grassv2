@@ -1,0 +1,12 @@
+{
+    "users": [
+        {
+            "user_id": "USER_ID",
+            "proxy": "http://another_username:another_password@another_proxy.com:8080"
+        },
+        {
+            "user_id": "2oAHp7y64Uu5vrxUj3IFS8uYTqY",
+            "proxy": "http://another_username:another_password@another_proxy.com:8080"
+        }
+    ]
+}
