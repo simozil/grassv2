@@ -1,0 +1,32 @@
+# Bytecode Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Lingkungan Virtual
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+.venv.bak/
+
+# Konfigurasi IDE/editor
+.vscode/
+.idea/
+*.sublime-workspace
+
+# File log dan output
+*.log
+*.out
+
+# Pengaturan OS
+.DS_Store
+Thumbs.db
+
+# File sensitif atau konfigurasi lokal
+proxy.json
+users.json
+
+# Lainnya
+*.bak
