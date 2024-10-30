@@ -14,15 +14,28 @@ WSS_URIS = [
     "wss://node.wynd.network/"
 ]
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+# Daftar User-Agent untuk Chrome dan Firefox di Windows
+USER_AGENTS = [
+    # Chrome Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    
+    # Firefox Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/118.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/117.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/116.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0"
+]
 
 class WebSocketClient:
     def __init__(self):
         self.users = []
         self.current_uri_index = 0
-
-    def clear_terminal(self):
-        print("\033[H\033[J", end="")
+        self.user_agents = {}
 
     def load_users_and_proxies(self):
         try:
@@ -56,7 +69,12 @@ class WebSocketClient:
         user_id = user_data['user_id']
         proxy = user_data['proxy']
         device_id = str(uuid.uuid4())
-        logger.info(f"Device ID: {device_id} for User ID: {user_id}")
+
+        if user_id not in self.user_agents:
+            self.user_agents[user_id] = random.choice(USER_AGENTS)
+        
+        current_user_agent = self.user_agents[user_id]
+        logger.info(f"User ID: {user_id} using User-Agent: {current_user_agent}")
 
         while True:
             try:
@@ -76,14 +94,13 @@ class WebSocketClient:
                 async with aiohttp.ClientSession(connector=connector) as session:
                     async with session.ws_connect(
                         current_uri,
-                        headers={"User-Agent": USER_AGENT},
+                        headers={"User-Agent": current_user_agent},
                         proxy=proxy,
                         ssl=False,
-                        heartbeat=30  # Enable built-in heartbeat
+                        heartbeat=30
                     ) as websocket:
                         logger.info(f"🌐 [{user_id}] Connected to WebSocket at {current_uri}")
                         
-                        # Start heartbeat task
                         heartbeat_task = asyncio.create_task(self.heartbeat(websocket, user_id))
                         
                         try:
@@ -99,7 +116,7 @@ class WebSocketClient:
                                             "result": {
                                                 "browser_id": device_id,
                                                 "user_id": user_id,
-                                                "user_agent": USER_AGENT,
+                                                "user_agent": current_user_agent,
                                                 "timestamp": int(asyncio.get_event_loop().time()),
                                                 "device_type": "extension",
                                                 "version": "2.5.0"
@@ -127,7 +144,7 @@ class WebSocketClient:
                         finally:
                             heartbeat_task.cancel()
 
-            except aiohttp.ClientConnectorError as e:
+            except aiohttp .ClientConnectorError as e:
                 logger.error(f"Connection error for User ID {user_id}: {str(e)}")
             except aiohttp.ClientProxyConnectionError as e:
                 logger.error(f"Proxy connection error for User ID {user_id}: {str(e)}")
@@ -138,7 +155,6 @@ class WebSocketClient:
             await asyncio.sleep(5)  # Wait before reconnecting
 
     async def run(self):
-        self.clear_terminal()
         users_data = self.load_users_and_proxies()
         
         if users_data:
