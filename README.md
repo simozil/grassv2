@@ -1,6 +1,6 @@
 # 1. Clone repositori
 ```
-git clone
+git clone https://github.com/simozil/grassv2.git
 cd grassv2
 ```
 # 2. Install 
