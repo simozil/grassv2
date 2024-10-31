@@ -19,6 +19,8 @@ pip install -r requirements.txt
 python3 main.py
 ```
 # 4. jika kalian kesulitan dalam mencari user id , kalian bisa masuk ke dashboard grass kalian dahulu
+ [Dashboard Grass](https://app.getgrass.io/register/?referralCode=now7oZ6nlMnWU9S)
+
 lalu "inspeksi" dan salin perintah dibawah ini
 ```
 localStorage.getItem('userId')
