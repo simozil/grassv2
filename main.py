@@ -4,14 +4,12 @@ import random
 import ssl
 import uuid
 import aiohttp
+import os
 from loguru import logger
 
 # Daftar alternatif WSS URI
 WSS_URIS = [
-    "wss://proxy.wynd.network:4650/",
-    "wss://proxy.wynd.network/",
-    "wss://wss.wynd.network/",
-    "wss://node.wynd.network/"
+    "wss://proxy.wynd.network:4650/"
 ]
 
 # Daftar User-Agent untuk Chrome dan Firefox di Windows
@@ -36,6 +34,14 @@ class WebSocketClient:
         self.users = []
         self.current_uri_index = 0
         self.user_agents = {}
+        self.log_folder = "logs"  # Nama folder untuk log
+        self.create_log_folder()
+
+    def create_log_folder(self):
+        """Membuat folder untuk menyimpan log jika belum ada."""
+        if not os.path.exists(self.log_folder):
+            os.makedirs(self.log_folder)
+            logger.info(f"Log folder '{self.log_folder}' created.")
 
     def load_users_and_proxies(self):
         try:
@@ -70,11 +76,15 @@ class WebSocketClient:
         proxy = user_data['proxy']
         device_id = str(uuid.uuid4())
 
+        # Menambahkan logger untuk setiap user_id dengan pemisah
+        logger.add(os.path.join(self.log_folder, f"{user_id}.log"), rotation="1 MB", retention="10 days", level="INFO", 
+                   format="{time} {level} {message}\n===============================")
+
         if user_id not in self.user_agents:
             self.user_agents[user_id] = random.choice(USER_AGENTS)
         
         current_user_agent = self.user_agents[user_id]
-        logger.info(f"User ID: {user_id} using User-Agent: {current_user_agent}")
+        logger.info(f"User  ID: {user_id} using User-Agent: {current_user_agent}")
 
         while True:
             try:
@@ -89,14 +99,14 @@ class WebSocketClient:
 
                 connector = aiohttp.TCPConnector(ssl=ssl_context, force_close=True)
                 
-                logger.info(f"🌐 [{user_id}] Using proxy: {proxy}")
+                logger.info(f"🌐 [{user_id}] Using proxy: { proxy}")
                 
                 async with aiohttp.ClientSession(connector=connector) as session:
                     async with session.ws_connect(
                         current_uri,
                         headers={"User-Agent": current_user_agent},
                         proxy=proxy,
-                        ssl=False,
+                        ssl=ssl_context,  # Pastikan SSL diaktifkan
                         heartbeat=30
                     ) as websocket:
                         logger.info(f"🌐 [{user_id}] Connected to WebSocket at {current_uri}")
@@ -134,7 +144,7 @@ class WebSocketClient:
                                         logger.info(f"📡 [{user_id}] Sending PONG response")
                                     
                                 elif message.type == aiohttp.WSMsgType.CLOSED:
-                                    logger.warning(f"WebSocket closed for User ID {user_id}")
+                                    logger.info(f"WebSocket closed for User ID {user_id}")
                                     break
                                 elif message.type == aiohttp.WSMsgType.ERROR:
                                     logger.error(f"WebSocket error for User ID {user_id}")
@@ -144,7 +154,7 @@ class WebSocketClient:
                         finally:
                             heartbeat_task.cancel()
 
-            except aiohttp .ClientConnectorError as e:
+            except aiohttp.ClientConnectorError as e:
                 logger.error(f"Connection error for User ID {user_id}: {str(e)}")
             except aiohttp.ClientProxyConnectionError as e:
                 logger.error(f"Proxy connection error for User ID {user_id}: {str(e)}")
@@ -154,18 +164,11 @@ class WebSocketClient:
             logger.info(f"Reconnecting for User ID {user_id} in 5 seconds...")
             await asyncio.sleep(5)  # Wait before reconnecting
 
-    async def run(self):
-        users_data = self.load_users_and_proxies()
-        
-        if users_data:
-            logger.info(f"🌍 Loaded {len(users_data)} user-proxy pairs")
-        else:
-            logger.warning("⚠️ No user-proxy pairs loaded. Exiting.")
-            return
-
-        tasks = [self.connect_to_wss(user_data) for user_data in users_data]
+    async def main(self):
+        users_and_proxies = self.load_users_and_proxies()
+        tasks = [self.connect_to_wss(user_data) for user_data in users_and_proxies]
         await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
     client = WebSocketClient()
-    asyncio.run(client.run())
+    asyncio.run(client.main())
