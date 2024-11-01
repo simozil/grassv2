@@ -5,6 +5,7 @@ import ssl
 import uuid
 import aiohttp
 import os
+import signal
 from loguru import logger
 
 # Daftar alternatif WSS URI
@@ -14,7 +15,6 @@ WSS_URIS = [
 
 # Daftar User-Agent untuk Chrome dan Firefox di Windows
 USER_AGENTS = [
-    # Chrome Windows
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
@@ -34,11 +34,11 @@ class WebSocketClient:
         self.users = []
         self.current_uri_index = 0
         self.user_agents = {}
-        self.log_folder = "logs"  # Nama folder untuk log
+        self.log_folder = "logs"
+        self.running = True  # Menandakan status client
         self.create_log_folder()
 
     def create_log_folder(self):
-        """Membuat folder untuk menyimpan log jika belum ada."""
         if not os.path.exists(self.log_folder):
             os.makedirs(self.log_folder)
             logger.info(f"Log folder '{self.log_folder}' created.")
@@ -58,17 +58,17 @@ class WebSocketClient:
         return uri
 
     async def heartbeat(self, websocket, user_id):
-        while True:
+        while self.running:  # Cek status client
             try:
-                await asyncio.sleep(20)  # Send heartbeat every 20 seconds
+                await asyncio.sleep(20)
                 heartbeat_msg = {
                     "action": "PING",
                     "id": str(uuid.uuid4())
                 }
                 await websocket.send_json(heartbeat_msg)
-                logger.info(f"❤️ [{user_id}] Sent heartbeat")
+                logger.info(f"?? [{user_id}] Sent heartbeat")
             except Exception as e:
-                logger.error(f"❌ [{user_id}] Heartbeat error: {str(e)}")
+                logger.error(f"? [{user_id}] Heartbeat error: {str(e)}")
                 break
 
     async def connect_to_wss(self, user_data):
@@ -76,7 +76,6 @@ class WebSocketClient:
         proxy = user_data['proxy']
         device_id = str(uuid.uuid4())
 
-        # Menambahkan logger untuk setiap user_id dengan pemisah
         logger.add(os.path.join(self.log_folder, f"{user_id}.log"), rotation="1 MB", retention="10 days", level="INFO", 
                    format="{time} {level} {message}\n===============================")
 
@@ -84,9 +83,9 @@ class WebSocketClient:
             self.user_agents[user_id] = random.choice(USER_AGENTS)
         
         current_user_agent = self.user_agents[user_id]
-        logger.info(f"User  ID: {user_id} using User-Agent: {current_user_agent}")
+        logger.info(f"User ID: {user_id} using User-Agent: {current_user_agent}")
 
-        while True:
+        while self.running:  # Cek status client
             try:
                 current_uri = self.get_next_uri()
                 logger.info(f"Trying to connect to {current_uri}")
@@ -99,17 +98,17 @@ class WebSocketClient:
 
                 connector = aiohttp.TCPConnector(ssl=ssl_context, force_close=True)
                 
-                logger.info(f"🌐 [{user_id}] Using proxy: { proxy}")
+                logger.info(f"?? [{user_id}] Using proxy: {proxy}")
                 
                 async with aiohttp.ClientSession(connector=connector) as session:
                     async with session.ws_connect(
                         current_uri,
                         headers={"User-Agent": current_user_agent},
                         proxy=proxy,
-                        ssl=ssl_context,  # Pastikan SSL diaktifkan
+                        ssl=ssl_context,
                         heartbeat=30
                     ) as websocket:
-                        logger.info(f"🌐 [{user_id}] Connected to WebSocket at {current_uri}")
+                        logger.info(f"?? [{user_id}] Connected to WebSocket at {current_uri}")
                         
                         heartbeat_task = asyncio.create_task(self.heartbeat(websocket, user_id))
                         
@@ -133,7 +132,7 @@ class WebSocketClient:
                                             }
                                         }
                                         await websocket.send_json(auth_response)
-                                        logger.info(f"🔐 [{user_id}] Sending AUTH response")
+                                        logger.info(f"?? [{user_id}] Sending AUTH response")
                                     
                                     elif data.get('action') == 'PING':
                                         ping_response = {
@@ -141,7 +140,7 @@ class WebSocketClient:
                                             "origin_action": "PONG"
                                         }
                                         await websocket.send_json(ping_response)
-                                        logger.info(f"📡 [{user_id}] Sending PONG response")
+                                        logger.info(f"?? [{user_id}] Sending PONG response")
                                     
                                 elif message.type == aiohttp.WSMsgType.CLOSED:
                                     logger.info(f"WebSocket closed for User ID {user_id}")
@@ -169,6 +168,25 @@ class WebSocketClient:
         tasks = [self.connect_to_wss(user_data) for user_data in users_and_proxies]
         await asyncio.gather(*tasks)
 
+    def stop(self):
+        self.running = False  # Mengubah status client menjadi tidak berjalan
+
+async def shutdown(signum, loop):
+    logger.info("Received exit signal, shutting down...")
+    for task in asyncio.all_tasks(loop):
+        task.cancel()
+    await asyncio.gather(*asyncio.all_tasks(loop), return_exceptions=True)
+    loop.stop()
+
 if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
     client = WebSocketClient()
-    asyncio.run(client.main())
+
+    # Menangani sinyal untuk menghentikan aplikasi
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, client.stop)
+
+    try:
+        loop.run_until_complete(client.main())
+    finally:
+        loop.close()
