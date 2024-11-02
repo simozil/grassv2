@@ -14,6 +14,10 @@ pip install fake_useragent
 ```
 pip install websockets_proxy
 ```
+```
+pip install prettytable
+```
+
 
 # RUN
 ```
