@@ -14,7 +14,6 @@ user_agent = UserAgent(os='windows', platforms='pc', browsers='chrome')
 random_user_agent = user_agent.random
 
 connected_users = {}
-failed_connections = {}
 retry_attempts = {}
 
 def display_connection_table():
@@ -25,15 +24,21 @@ def display_connection_table():
         table.add_row([index, user_id, info["proxy"], info["status"], attempts])
     logger.info("\n" + str(table))
 
+async def monitor_connections():
+    while True:
+        display_connection_table()
+        for user_id, info in connected_users.items():
+            if info["status"] == "Disconnected":
+                logger.info(f"[{user_id}] Attempting to reconnect...")
+                asyncio.create_task(connect_to_wss(info["proxy"], user_id))
+        await asyncio.sleep(3)
+
 async def connect_to_wss(socks5_proxy, user_id):
     device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
-    logger.info(f"Device ID for {socks5_proxy}: {device_id}")
-
     retry_count = 0
-    max_retries = 5  # Maximum number of retries
-    backoff_time = 1  # Start with 1 second backoff
+    max_retries = 5  # Limit retries per connection attempt
 
-    while retry_count < max_retries:
+    while True:  # Keep retrying until connected
         try:
             await asyncio.sleep(random.randint(1, 10) / 10)
             custom_headers = {
@@ -50,15 +55,11 @@ async def connect_to_wss(socks5_proxy, user_id):
 
             async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname=server_hostname,
                                      extra_headers=custom_headers) as websocket:
-                logger.info(f"Connected to WebSocket: {uri} via {socks5_proxy}")
-
+                logger.info(f"[{user_id}] Connected to WebSocket: {uri} via {socks5_proxy}")
                 connected_users[user_id] = {"proxy": socks5_proxy, "uri": uri, "status": "Connected"}
-                if user_id in failed_connections:
-                    failed_connections.pop(user_id, None)
-                retry_attempts[user_id] = 0  # Reset retry count
-                await asyncio.sleep(3)  # Delay before displaying the table
-                display_connection_table()
+                retry_attempts[user_id] = 0  # Reset retry attempts on successful connection
 
+                # Start ping task
                 ping_task = asyncio.create_task(send_ping(websocket, user_id))
 
                 try:
@@ -91,9 +92,8 @@ async def connect_to_wss(socks5_proxy, user_id):
 
                 except Exception as e:
                     logger.error(f"[{user_id}] Connection error with {socks5_proxy}: {e}")
-                    break  # Break out to reconnect logic
+                    break  # Exit loop to attempt reconnect
                 finally:
-                    await asyncio.sleep(3)  # Give some time before closing
                     ping_task.cancel()
                     try:
                         await ping_task
@@ -101,22 +101,21 @@ async def connect_to_wss(socks5_proxy, user_id):
                         logger.warning(f"[{user_id}] Ping task was cancelled.")
 
                     connected_users[user_id]["status"] = "Disconnected"
-                    await asyncio.sleep(3)  # Delay before displaying the table
-                    display_connection_table()
-                    logger.warning(f"[{user_id}] Connection closed, retrying in {backoff_time} seconds...")
-                    await asyncio.sleep(backoff_time)
+                    display_connection_table()  # Update table immediately on disconnect
 
+            # Increment retry count and delay
             retry_count += 1
-            backoff_time *= 2  # Double the backoff time
-
+            if retry_count >= max_retries:
+                logger.warning(f"[{user_id}] Max retries reached, waiting before next attempt...")
+                await asyncio.sleep(10)  # Longer wait after reaching max retries
+            else:
+                await asyncio.sleep(3 * retry_count)  # Exponential backoff
         except Exception as e:
             logger.error(f"[{user_id}] General connection error: {e}")
-            if user_id not in failed_connections:
-                failed_connections[user_id] = {"proxy": socks5_proxy, "uri": uri, "attempts": retry_count}
             connected_users[user_id] = {"proxy": socks5_proxy, "uri": uri, "status": "Failed"}
-            await asyncio.sleep(1)  # Delay before displaying the table
+            retry_attempts[user_id] = retry_count
             display_connection_table()
-            await asyncio.sleep(backoff_time)
+            await asyncio.sleep(3 * retry_count)  # Exponential backoff
 
 async def send_ping(websocket, user_id):
     while True:
@@ -129,10 +128,10 @@ async def send_ping(websocket, user_id):
             })
             logger.debug(f"[{user_id}] Sending PING: {send_message}")
             await websocket.send(send_message)
-            await asyncio.sleep(60)  # Delay of 3 seconds before the next ping
+            await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"[{user_id}] Error sending PING: {e}")
-            break  # Break out to reconnect logic
+            break
 
 async def main():
     with open('user_id.txt', 'r') as user_file:
@@ -147,11 +146,15 @@ async def main():
     proxy_count = len(local_proxies)
     user_count = len(user_ids)
 
+    # Start the connection monitoring task
+    monitor_task = asyncio.create_task(monitor_connections())
+    tasks.append(monitor_task)
+
     for i in range(max(proxy_count, user_count)):
         user_id = user_ids[i % user_count]
         proxy = local_proxies[i % proxy_count]
         tasks.append(asyncio.ensure_future(connect_to_wss(proxy, user_id)))
-        await asyncio.sleep(3)  # Slight delay between task starts
+        await asyncio.sleep(3)
 
     await asyncio.gather(*tasks)
 
