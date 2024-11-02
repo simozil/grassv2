@@ -7,9 +7,13 @@ import uuid
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
+from prettytable import PrettyTable
 
 user_agent = UserAgent(os='windows', platforms='pc', browsers='chrome')
 random_user_agent = user_agent.random
+
+connected_users = {}
+failed_connections = []
 
 async def connect_to_wss(socks5_proxy, user_id):
     device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
@@ -33,6 +37,11 @@ async def connect_to_wss(socks5_proxy, user_id):
             async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname=server_hostname,
                                      extra_headers=custom_headers) as websocket:
                 logger.info(f"Connected to WebSocket: {uri} via {socks5_proxy}")
+                
+                connected_users[user_id] = {"proxy": socks5_proxy, "uri": uri, "status": "Connected"}
+                if user_id in failed_connections:
+                    failed_connections.remove(user_id)
+                display_connection_table()
 
                 async def send_ping():
                     try:
@@ -43,13 +52,13 @@ async def connect_to_wss(socks5_proxy, user_id):
                                 "action": "PING",
                                 "data": {}
                             })
-                            logger.debug(f"Sending PING: {send_message}")
+                            logger.debug(f"[{user_id}] Sending PING: {send_message}")
                             await websocket.send(send_message)
-                            await asyncio.sleep(60)  # Increase ping interval
+                            await asyncio.sleep(60)
                     except asyncio.CancelledError:
-                        logger.info("Ping task canceled.")
+                        logger.info(f"[{user_id}] Ping task canceled.")
                     except Exception as e:
-                        logger.error(f"Ping error: {e}")
+                        logger.error(f"[{user_id}] Ping error: {e}")
 
                 ping_task = asyncio.create_task(send_ping())
 
@@ -57,7 +66,7 @@ async def connect_to_wss(socks5_proxy, user_id):
                     while True:
                         response = await websocket.recv()
                         message = json.loads(response)
-                        logger.info(f"Received message: {message}")
+                        logger.info(f"[{user_id}] Received message: {message}")
 
                         if message.get("action") == "AUTH":
                             auth_response = {
@@ -73,25 +82,40 @@ async def connect_to_wss(socks5_proxy, user_id):
                                     "extension_id": "lkbnfiajjmbhnfledhphioinpickokdi"
                                 }
                             }
-                            logger.debug(f"Sending AUTH response: {auth_response}")
+                            logger.debug(f"[{user_id}] Sending AUTH response: {auth_response}")
                             await websocket.send(json.dumps(auth_response))
 
                         elif message.get("action") == "PONG":
                             pong_response = {"id": message["id"], "origin_action": "PONG"}
-                            logger.debug(f"Sending PONG response: {pong_response}")
+                            logger.debug(f"[{user_id}] Sending PONG response: {pong_response}")
                             await websocket.send(json.dumps(pong_response))
 
                 except Exception as e:
-                    logger.error(f"Connection error with {socks5_proxy}: {e}")
+                    logger.error(f"[{user_id}] Connection error with {socks5_proxy}: {e}")
                 finally:
+                    connected_users[user_id]["status"] = "Disconnected"
+                    display_connection_table()
                     ping_task.cancel()
                     await ping_task
-                    logger.info(f"Reconnecting in 5 seconds for proxy {socks5_proxy}...")
+                    logger.warning(f"[{user_id}] Reconnecting for proxy {socks5_proxy} in 5 seconds...")
                     await asyncio.sleep(5)
 
         except Exception as e:
-            logger.error(f"General connection error: {e}")
-            await asyncio.sleep(5)  # Delay before reconnecting
+            logger.error(f"[{user_id}] General connection error for user {user_id}: {e}")
+            if user_id not in failed_connections:
+                failed_connections.append(user_id)
+            connected_users[user_id] = {"proxy": socks5_proxy, "uri": uri, "status": "Failed"}
+            display_connection_table()
+            await asyncio.sleep(5)
+
+def display_connection_table():
+    table = PrettyTable()
+    table.field_names = ["User ID", "Proxy", "URI", "Status"]
+    
+    for user_id, info in connected_users.items():
+        table.add_row([user_id, info["proxy"], info["uri"], info["status"]])
+
+    logger.info("\n" + table.get_string())
 
 async def main():
     with open('user_id.txt', 'r') as user_file:
@@ -110,7 +134,7 @@ async def main():
         user_id = user_ids[i % user_count]
         proxy = local_proxies[i % proxy_count]
         tasks.append(asyncio.ensure_future(connect_to_wss(proxy, user_id)))
-        await asyncio.sleep(0.5)  # Brief delay to prevent rapid simultaneous connections
+        await asyncio.sleep(0.5)
 
     await asyncio.gather(*tasks)
 
