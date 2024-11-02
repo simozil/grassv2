@@ -14,3 +14,8 @@ pip install fake_useragent
 ```
 pip install websockets_proxy
 ```
+
+# RUN
+```
+python3 localgrassnode.py
+```
