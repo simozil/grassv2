@@ -4,6 +4,7 @@ import ssl
 import json
 import time
 import uuid
+import os
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
@@ -13,13 +14,26 @@ user_agent = UserAgent(os='windows', platforms='pc', browsers='chrome')
 random_user_agent = user_agent.random
 
 connected_users = {}
-failed_connections = []
+failed_connections = {}
+retry_attempts = {}
+
+def display_connection_table():
+    table = PrettyTable()
+    table.field_names = ["No", "User ID", "Proxy", "Status", "Attempts"]
+    for index, (user_id, info) in enumerate(connected_users.items(), start=1):
+        attempts = retry_attempts.get(user_id, 0)
+        table.add_row([index, user_id, info["proxy"], info["status"], attempts])
+    logger.info("\n" + str(table))
 
 async def connect_to_wss(socks5_proxy, user_id):
     device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
     logger.info(f"Device ID for {socks5_proxy}: {device_id}")
 
-    while True:
+    retry_count = 0
+    max_retries = 5  # Maximum number of retries
+    backoff_time = 1  # Start with 1 second backoff
+
+    while retry_count < max_retries:
         try:
             await asyncio.sleep(random.randint(1, 10) / 10)
             custom_headers = {
@@ -37,30 +51,15 @@ async def connect_to_wss(socks5_proxy, user_id):
             async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname=server_hostname,
                                      extra_headers=custom_headers) as websocket:
                 logger.info(f"Connected to WebSocket: {uri} via {socks5_proxy}")
-                
+
                 connected_users[user_id] = {"proxy": socks5_proxy, "uri": uri, "status": "Connected"}
                 if user_id in failed_connections:
-                    failed_connections.remove(user_id)
+                    failed_connections.pop(user_id, None)
+                retry_attempts[user_id] = 0  # Reset retry count
+                await asyncio.sleep(3)  # Delay before displaying the table
                 display_connection_table()
 
-                async def send_ping():
-                    try:
-                        while True:
-                            send_message = json.dumps({
-                                "id": str(uuid.uuid4()),
-                                "version": "1.0.0",
-                                "action": "PING",
-                                "data": {}
-                            })
-                            logger.debug(f"[{user_id}] Sending PING: {send_message}")
-                            await websocket.send(send_message)
-                            await asyncio.sleep(60)
-                    except asyncio.CancelledError:
-                        logger.info(f"[{user_id}] Ping task canceled.")
-                    except Exception as e:
-                        logger.error(f"[{user_id}] Ping error: {e}")
-
-                ping_task = asyncio.create_task(send_ping())
+                ping_task = asyncio.create_task(send_ping(websocket, user_id))
 
                 try:
                     while True:
@@ -92,30 +91,48 @@ async def connect_to_wss(socks5_proxy, user_id):
 
                 except Exception as e:
                     logger.error(f"[{user_id}] Connection error with {socks5_proxy}: {e}")
+                    break  # Break out to reconnect logic
                 finally:
-                    connected_users[user_id]["status"] = "Disconnected"
-                    display_connection_table()
+                    await asyncio.sleep(3)  # Give some time before closing
                     ping_task.cancel()
-                    await ping_task
-                    logger.warning(f"[{user_id}] Reconnecting for proxy {socks5_proxy} in 5 seconds...")
-                    await asyncio.sleep(5)
+                    try:
+                        await ping_task
+                    except asyncio.CancelledError:
+                        logger.warning(f"[{user_id}] Ping task was cancelled.")
+
+                    connected_users[user_id]["status"] = "Disconnected"
+                    await asyncio.sleep(3)  # Delay before displaying the table
+                    display_connection_table()
+                    logger.warning(f"[{user_id}] Connection closed, retrying in {backoff_time} seconds...")
+                    await asyncio.sleep(backoff_time)
+
+            retry_count += 1
+            backoff_time *= 2  # Double the backoff time
 
         except Exception as e:
-            logger.error(f"[{user_id}] General connection error for user {user_id}: {e}")
+            logger.error(f"[{user_id}] General connection error: {e}")
             if user_id not in failed_connections:
-                failed_connections.append(user_id)
+                failed_connections[user_id] = {"proxy": socks5_proxy, "uri": uri, "attempts": retry_count}
             connected_users[user_id] = {"proxy": socks5_proxy, "uri": uri, "status": "Failed"}
+            await asyncio.sleep(1)  # Delay before displaying the table
             display_connection_table()
-            await asyncio.sleep(5)
+            await asyncio.sleep(backoff_time)
 
-def display_connection_table():
-    table = PrettyTable()
-    table.field_names = ["User ID", "Proxy", "URI", "Status"]
-    
-    for user_id, info in connected_users.items():
-        table.add_row([user_id, info["proxy"], info["uri"], info["status"]])
-
-    logger.info("\n" + table.get_string())
+async def send_ping(websocket, user_id):
+    while True:
+        try:
+            send_message = json.dumps({
+                "id": str(uuid.uuid4()),
+                "version": "1.0.0",
+                "action": "PING",
+                "data": {}
+            })
+            logger.debug(f"[{user_id}] Sending PING: {send_message}")
+            await websocket.send(send_message)
+            await asyncio.sleep(60)  # Delay of 3 seconds before the next ping
+        except Exception as e:
+            logger.error(f"[{user_id}] Error sending PING: {e}")
+            break  # Break out to reconnect logic
 
 async def main():
     with open('user_id.txt', 'r') as user_file:
@@ -134,7 +151,7 @@ async def main():
         user_id = user_ids[i % user_count]
         proxy = local_proxies[i % proxy_count]
         tasks.append(asyncio.ensure_future(connect_to_wss(proxy, user_id)))
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(3)  # Slight delay between task starts
 
     await asyncio.gather(*tasks)
 
