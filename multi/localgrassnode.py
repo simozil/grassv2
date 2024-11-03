@@ -30,7 +30,7 @@ async def monitor_connections():
             if info["status"] == "Disconnected":
                 logger.info(f"[{user_id}] Attempting to reconnect...")
                 asyncio.create_task(connect_to_wss(info["proxy"], user_id))
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
 
 async def connect_to_wss(socks5_proxy, user_id):
     device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
@@ -39,7 +39,7 @@ async def connect_to_wss(socks5_proxy, user_id):
 
     while True:
         try:
-            await asyncio.sleep(random.randint(1, 10) / 10)
+            await asyncio.sleep(random.uniform(0.5, 1.5))
             custom_headers = {
                 "User-Agent": random_user_agent,
                 "Origin": "chrome-extension://lkbnfiajjmbhnfledhphioinpickokdi"
@@ -88,31 +88,32 @@ async def connect_to_wss(socks5_proxy, user_id):
                             logger.debug(f"[{user_id}] Sending PONG response: {pong_response}")
                             await websocket.send(json.dumps(pong_response))
 
+                except asyncio.CancelledError:
+                    pass
                 except Exception as e:
-                    logger.error(f"[{user_id}] Connection error with {socks5_proxy}: {e}")
+                    logger.error(f"[{user_id}] Connection error: {e}")
+                    connected_users[user_id]["status"] = "Disconnected"
                     break
+
                 finally:
                     ping_task.cancel()
                     try:
                         await ping_task
                     except asyncio.CancelledError:
-                        logger.warning(f"[{user_id}] Ping task was cancelled.")
-
-                    connected_users[user_id]["status"] = "Disconnected"
-                    display_connection_table()
+                        pass
 
             retry_count += 1
             if retry_count >= max_retries:
                 logger.warning(f"[{user_id}] Max retries reached, waiting before next attempt...")
-                await asyncio.sleep(10)
+                await asyncio.sleep(15)
+                retry_count = 0
             else:
-                await asyncio.sleep(3 * retry_count)
+                await asyncio.sleep(5 * retry_count)
+
         except Exception as e:
             logger.error(f"[{user_id}] General connection error: {e}")
             connected_users[user_id] = {"proxy": socks5_proxy, "uri": uri, "status": "Failed"}
-            retry_attempts[user_id] = retry_count
-            display_connection_table()
-            await asyncio.sleep(3 * retry_count)
+            await asyncio.sleep(5 * retry_count)
 
 async def send_ping(websocket, user_id):
     while True:
@@ -125,7 +126,7 @@ async def send_ping(websocket, user_id):
             })
             logger.debug(f"[{user_id}] Sending PING: {send_message}")
             await websocket.send(send_message)
-            await asyncio.sleep(60)
+            await asyncio.sleep(30)  # Reduced interval to keep the connection alive
         except Exception as e:
             logger.error(f"[{user_id}] Error sending PING: {e}")
             break
@@ -150,7 +151,7 @@ async def main():
         user_id = user_ids[i % user_count]
         proxy = local_proxies[i % proxy_count]
         tasks.append(asyncio.ensure_future(connect_to_wss(proxy, user_id)))
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
 
     await asyncio.gather(*tasks)
 
