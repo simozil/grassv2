@@ -14,7 +14,6 @@ user_agent = UserAgent(os='windows', platforms='pc', browsers='chrome')
 random_user_agent = user_agent.random
 
 connected_users = {}
-retry_attempts = {}
 
 def display_connection_table():
     table = PrettyTable()
@@ -34,12 +33,10 @@ async def monitor_connections():
 
 async def connect_to_wss(socks5_proxy, user_id):
     device_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, socks5_proxy))
-    retry_count = 0
-    max_retries = 5
 
     while True:
         try:
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+            await asyncio.sleep(random.uniform(0.5, 1.5))  # Small delay to avoid rapid-fire connections
             custom_headers = {
                 "User-Agent": random_user_agent,
                 "Origin": "chrome-extension://lkbnfiajjmbhnfledhphioinpickokdi"
@@ -47,17 +44,18 @@ async def connect_to_wss(socks5_proxy, user_id):
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
-            urilist = ["wss://proxy.wynd.network:4444/", "wss://proxy.wynd.network:4650/"]
+            urilist = ["wss://proxy2.wynd.network:4444/", "wss://proxy2.wynd.network:4650/"]
             uri = random.choice(urilist)
-            server_hostname = "proxy.wynd.network"
-            proxy = Proxy.from_url(socks5_proxy)
+            server_hostname = "proxy2.wynd.network"
+            
+            proxy = Proxy.from_url(socks5_proxy)  # Assuming socks5_proxy includes credentials
 
             async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname=server_hostname,
                                      extra_headers=custom_headers) as websocket:
                 logger.info(f"[{user_id}] Connected to WebSocket: {uri} via {socks5_proxy}")
                 connected_users[user_id] = {"proxy": socks5_proxy, "uri": uri, "status": "Connected"}
-                retry_attempts[user_id] = 0
 
+                # Start sending pings
                 ping_task = asyncio.create_task(send_ping(websocket, user_id))
 
                 try:
@@ -96,24 +94,23 @@ async def connect_to_wss(socks5_proxy, user_id):
                     break
 
                 finally:
+                    # Cancel ping task and wait for it to complete
                     ping_task.cancel()
                     try:
                         await ping_task
                     except asyncio.CancelledError:
                         pass
 
-            retry_count += 1
-            if retry_count >= max_retries:
-                logger.warning(f"[{user_id}] Max retries reached, waiting before next attempt...")
-                await asyncio.sleep(15)
-                retry_count = 0
-            else:
-                await asyncio.sleep(5 * retry_count)
-
         except Exception as e:
             logger.error(f"[{user_id}] General connection error: {e}")
+            # Check for specific '407 Proxy Authentication Required' error to reconnect immediately
+            if '407 Proxy Authentication Required' in str(e):
+                logger.info(f"[{user_id}] Proxy authentication required, retrying with credentials...")
             connected_users[user_id] = {"proxy": socks5_proxy, "uri": uri, "status": "Failed"}
-            await asyncio.sleep(5 * retry_count)
+
+        # Re-attempt connection immediately if disconnected or failed
+        logger.info(f"[{user_id}] Re-attempting connection immediately...")
+        continue
 
 async def send_ping(websocket, user_id):
     while True:
